@@ -1,5 +1,3 @@
-
-
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Mic, MicOff, User, Users, Copy, Trash2, Plus, Volume2, Wand2,
@@ -91,6 +89,8 @@ export default function App() {
   const timerIntervalRef = useRef(null);
   const fileInputRef = useRef(null);
   const modalInputRef = useRef(null);
+  const isRecordingRef = useRef(false);
+  const processDictatedSpeechRef = useRef(() => {});
 
   // --- The Vault: Auto-Save to localStorage ---
   useEffect(() => {
@@ -161,7 +161,12 @@ export default function App() {
     }
   }, [scriptItems, interimTranscript]);
 
-  // --- Speech Recognition & Audio ---
+  // --- Keep latest isRecording value available to handlers without recreating recognition ---
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
+
+  // --- Speech Recognition & Audio (created ONCE; handlers read fresh state via refs) ---
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
@@ -175,7 +180,7 @@ export default function App() {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const chunk = event.results[i][0].transcript;
           if (event.results[i].isFinal) {
-            processDictatedSpeech(chunk.trim());
+            processDictatedSpeechRef.current(chunk.trim());
             setInterimTranscript('');
           } else {
             currentInterim += chunk;
@@ -191,7 +196,8 @@ export default function App() {
       };
 
       recognition.onend = () => {
-        if (isRecording) {
+        // Only auto-restart if we're still supposed to be recording (checked live, not stale)
+        if (isRecordingRef.current) {
           try { recognition.start(); } catch (e) {}
         }
       };
@@ -202,9 +208,13 @@ export default function App() {
     }
 
     return () => {
+      isRecordingRef.current = false; // prevent any pending onend from auto-restarting
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (e) {}
+      }
       stopAudioProcessing();
     };
-  }, [mode, castProfiles, activeCharacter, keywords, isRecording, isAutoCastMode, matchedCastName]);
+  }, []);
 
   const startAudioProcessing = async () => {
     try {
@@ -362,6 +372,7 @@ export default function App() {
 
   // --- Speech Parsing (The Brains) ---
   const processDictatedSpeech = (rawText) => {
+    // (kept as a normal closure so it always sees current mode/keywords/cast/etc.)
     if (!rawText) return;
     const lower = rawText.toLowerCase().trim();
 
@@ -424,6 +435,12 @@ export default function App() {
       appendDialogueToCharacter(speakerName, rawText);
     }
   };
+
+  // Keep the ref pointed at the latest processDictatedSpeech closure (fresh mode/cast/etc.)
+  // without ever needing to recreate the SpeechRecognition instance.
+  useEffect(() => {
+    processDictatedSpeechRef.current = processDictatedSpeech;
+  });
 
   const appendDialogueToCharacter = (charName, text) => {
     setScriptItems(prev => {
